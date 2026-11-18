@@ -15,9 +15,9 @@
 //     decided (a trailing stop that locks the ride when the trend merely pauses).
 //   - Guardrail fallback: if bar 1100 of a window arrives and the bot has still never
 //     bought (a window that falls from the first bar gives no cross), it takes one small
-//     20%-of-equity position on an up bar that closes above the fast EMA, so the entry
-//     still makes at least one real trade; the normal exits then apply. On any window
-//     with an ordinary cross this rule never fires.
+//     20%-of-equity position on a bar that closes above both the fast EMA and the bar
+//     before it, so the entry still makes at least one real trade; the normal exits
+//     then apply. On any window with an ordinary cross this rule never fires.
 //   - Every order caps its slippage at 250 bps past the close it was decided on: far above
 //     any normal minute gap (the dev window's largest open gap is under 20 bps), so orders
 //     are not refused in practice, but a wild print cannot fill the bot at any price.
@@ -53,6 +53,10 @@ interface Series {
   prevGap: number | null;
   /** Highest close since the current position's buy was decided. */
   peak: number;
+  /** The close of the bar before the latest one (0 before the first). */
+  prevClose: number;
+  /** The latest close seen. */
+  lastClose: number;
   bars: number;
 }
 
@@ -66,10 +70,12 @@ function step(span: number, value: number | null, close: number): number {
 function push(bar: Bar): { s: Series; gap: number | null; crossedUp: boolean } {
   let s = series.get(bar.symbol);
   if (s === undefined) {
-    s = { fast: null, slow: null, prevGap: null, peak: 0, bars: 0 };
+    s = { fast: null, slow: null, prevGap: null, peak: 0, prevClose: 0, lastClose: 0, bars: 0 };
     series.set(bar.symbol, s);
   }
   const close = Number(bar.c);
+  s.prevClose = s.lastClose;
+  s.lastClose = close;
   const before = s.fast !== null && s.slow !== null ? s.fast - s.slow : null;
   s.fast = step(FAST_SPAN, s.fast, close);
   s.slow = step(SLOW_SPAN, s.slow, close);
@@ -115,7 +121,7 @@ await runBars({
           boughtOnce = true;
           orders.push({ side: 'buy', symbol, notional_quote_units: spend, max_slippage_bps: MAX_SLIPPAGE_BPS });
         }
-      } else if (!boughtOnce && f.s.bars >= FALLBACK_AFTER && f.s.fast !== null && f.close > f.s.fast) {
+      } else if (!boughtOnce && f.s.bars >= FALLBACK_AFTER && f.s.fast !== null && f.close > f.s.fast && f.close > f.s.prevClose) {
         const notional = (equity * FALLBACK_BPS) / 10_000n;
         const spend = notional < state.cash ? notional : state.cash;
         if (spend >= BigInt(state.hello.fees.min_notional_quote_units) && spend <= state.weightRoom(symbol)) {
